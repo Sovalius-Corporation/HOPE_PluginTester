@@ -136,6 +136,7 @@ class StandalonePluginLoader:
     def __init__(self, plugins_dir: str) -> None:
         self._dir = Path(plugins_dir)
         self._plugins: Dict[str, ModuleType] = {}
+        self._configs: Dict[str, dict] = {}
         self.loaded_plugins: List[str] = []
         self.enabled_plugins: List[str] = []
 
@@ -166,11 +167,56 @@ class StandalonePluginLoader:
                     mod.configure(cfg)
 
                 self._plugins[pid] = mod
+                self._configs[pid] = cfg
                 self.loaded_plugins.append(pid)
                 self.enabled_plugins.append(pid)
                 logger.info("Standalone: loaded plugin %s from %s", pid, fpath)
             except Exception as exc:
                 logger.warning("Standalone: failed to load %s: %s", pid, exc)
+
+    def reload_plugin(self, path: str) -> bool:
+        """Hot-reload a single plugin by file path.
+
+        Returns True if the reload succeeded, False otherwise.
+        """
+        fpath = Path(path)
+        pid   = fpath.stem
+        if pid not in self._plugins:
+            # New file — attempt to load it
+            logger.info("Standalone: hot-loading new plugin %s", pid)
+            cfg = self._configs.get(pid, {})
+            try:
+                spec = importlib.util.spec_from_file_location(pid, fpath)
+                mod  = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)        # type: ignore[union-attr]
+                if hasattr(mod, "configure") and callable(mod.configure):
+                    mod.configure(cfg)
+                self._plugins[pid] = mod
+                self._configs[pid] = cfg
+                if pid not in self.loaded_plugins:
+                    self.loaded_plugins.append(pid)
+                if pid not in self.enabled_plugins:
+                    self.enabled_plugins.append(pid)
+                logger.info("Standalone: hot-loaded %s", pid)
+                return True
+            except Exception as exc:
+                logger.warning("Standalone: hot-load failed %s: %s", pid, exc)
+                return False
+
+        logger.info("Standalone: hot-reloading %s", pid)
+        try:
+            spec = importlib.util.spec_from_file_location(pid, fpath)
+            mod  = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)            # type: ignore[union-attr]
+            cfg = self._configs.get(pid, {})
+            if hasattr(mod, "configure") and callable(mod.configure):
+                mod.configure(cfg)
+            self._plugins[pid] = mod
+            logger.info("Standalone: reloaded plugin %s", pid)
+            return True
+        except Exception as exc:
+            logger.warning("Standalone: reload failed %s: %s", pid, exc)
+            return False
 
     def run_plugins(
         self,

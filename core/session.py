@@ -42,7 +42,7 @@ class TestSession(QThread):
         Fatal error message.
     """
 
-    frame_ready      = Signal(object, list, list)
+    frame_ready      = Signal(object, list, list, int)   # frame, tracks, violations, frame_index
     violation_detected = Signal(dict)
     stats_updated    = Signal(dict)
     session_error    = Signal(str)
@@ -56,6 +56,12 @@ class TestSession(QThread):
         self._step_mode  = False
         self._pause_event = threading.Event()
         self._pause_event.set()   # set = running, clear = paused
+        # Hot-reload queue
+        self._reload_requests: list = []
+        self._reload_lock = threading.Lock()
+        # Video recording
+        self._recording_path: Optional[str] = None
+        self._exporter = None   # VideoExporter, set in start_recording()
 
     # ------------------------------------------------------------------
     # Control API  (called from the UI thread)
@@ -84,6 +90,24 @@ class TestSession(QThread):
         if self._is_paused:
             self._step_mode = True
             self._pause_event.set()   # unblock for one frame
+
+    def request_plugin_reload(self, path: str) -> None:
+        """Thread-safe: queue a plugin file for hot-reload on the next frame."""
+        with self._reload_lock:
+            if path not in self._reload_requests:
+                self._reload_requests.append(path)
+
+    def start_recording(self, path: str) -> None:
+        """Set the output path for annotated video export (call before/during session)."""
+        self._recording_path = path
+
+    def stop_recording(self) -> None:
+        """Stop recording and flush the video file."""
+        self._recording_path = None
+        if self._exporter is not None:
+            out = self._exporter.finish()
+            self._exporter = None
+            logger.info("Recording saved: %s", out)
 
     # ------------------------------------------------------------------
     # QThread entry
@@ -188,6 +212,8 @@ class TestSession(QThread):
             raise RuntimeError(f"Cannot open video: {scn.video_path}")
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        if fps <= 0:
+            fps = 30.0
         logger.info("Video opened. fps=%.1f", fps)
 
         # ── Tracker + Speed ──────────────────────────────────────────
@@ -217,6 +243,17 @@ class TestSession(QThread):
         plugin_ema_ms: Dict[str, float] = {}   # per-plugin EMA latency (ms)
 
         while not self._stop:
+            # ── hot-reload any queued plugins ─────────────────────────
+            with self._reload_lock:
+                pending = self._reload_requests[:]
+                self._reload_requests.clear()
+            for rpath in pending:
+                if use_standalone and standalone_pm:
+                    ok = standalone_pm.reload_plugin(rpath)
+                    logger.info("Hot-reload %s: %s", rpath, "ok" if ok else "FAILED")
+                else:
+                    logger.warning("Hot-reload ignored in SVG_HOPE mode: %s", rpath)
+
             # ── pause / step gate ────────────────────────────────────
             self._pause_event.wait()   # blocks here when paused
             if self._stop:
@@ -325,7 +362,15 @@ class TestSession(QThread):
                             all_violations.append(v)
                             self.violation_detected.emit(dict(v))
 
-            self.frame_ready.emit(frame, list(tracks), frame_violations)
+            self.frame_ready.emit(frame, list(tracks), frame_violations, frame_index)
+
+            # ── annotated video export ───────────────────────────────
+            if self._recording_path and self._exporter is None:
+                from core.video_exporter import VideoExporter
+                h, w = frame.shape[:2]
+                self._exporter = VideoExporter(self._recording_path, fps, w, h)
+            if self._exporter is not None:
+                self._exporter.write(frame, list(tracks), frame_violations)
 
             frame_index += 1
             if frame_index % stats_interval == 0:
@@ -340,6 +385,32 @@ class TestSession(QThread):
                 })
 
         cap.release()
+
+        # ── finish recording ─────────────────────────────────────────
+        if self._exporter is not None:
+            out_path = self._exporter.finish()
+            self._exporter = None
+            logger.info("Annotated video saved: %s", out_path)
+
+        # ── session report ───────────────────────────────────────────
+        if getattr(scn, "auto_report", True) and all_violations:
+            try:
+                from core.session_report import SessionReport
+                elapsed = time.monotonic() - t0
+                stats = {
+                    "total_frames": frame_index,
+                    "total_violations": len(all_violations),
+                    "duration_sec": round(elapsed, 2),
+                    "processing_fps": round(frame_index / elapsed, 1) if elapsed > 0 else 0,
+                }
+                reporter = SessionReport()
+                name = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                reporter.write_json(name, all_violations, stats)
+                reporter.write_sqlite(name, all_violations, stats)
+                logger.info("Session report written: %s", name)
+            except Exception as exc:
+                logger.warning("Could not write session report: %s", exc)
+
         logger.info(
             "Session complete. frames=%d  violations=%d",
             frame_index, len(all_violations),

@@ -15,18 +15,21 @@ Overlays:
 from __future__ import annotations
 
 import math
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from PySide6.QtCore import Qt, QRect, QPointF, QRectF
+from PySide6.QtCore import Qt, QPoint, QRect, QPointF, QRectF, Signal
 from PySide6.QtGui import (
     QColor, QFont, QImage, QPainter, QPainterPath, QPen,
     QPixmap, QBrush, QPolygonF,
 )
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QMenu, QSizePolicy, QWidget
 
 
 # ── colour palette ────────────────────────────────────────────────────────────
+_COL_GT_TP     = QColor(74,  222, 128, 230)   # green  true positive
+_COL_GT_FP     = QColor(239,  68,  68, 230)   # red    false positive
+_COL_GT_FN     = QColor(251, 146,  60, 230)   # orange false negative
 _COL_NORMAL    = QColor(34, 197, 94,  220)   # green   bbox
 _COL_VIOLATION = QColor(239, 68,  68,  230)   # red     bbox violation
 _COL_LANE_FILL = QColor(0,   200, 0,   64)    # green translucent fill  (SVG_HOPE default)
@@ -54,6 +57,8 @@ def _poly_center(pts) -> QPointF:
 class VideoPanel(QWidget):
     """Displays video frames with detection + violation overlays."""
 
+    fullscreen_requested = Signal()
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setMinimumSize(480, 320)
@@ -74,6 +79,19 @@ class VideoPanel(QWidget):
         # Frozen snapshot (set by clicking a violation row)
         self._snapshot_pixmap: Optional[QPixmap] = None
 
+        # GT markup:  (frame_index, track_id) -> label str
+        self._gt_labels: Dict[Tuple[int, int], str] = {}
+        self._current_frame_index: int = 0
+        self._is_paused: bool = False
+
+        # Rendering state for _screen_to_frame()
+        self._render_ox: int = 0
+        self._render_oy: int = 0
+        self._render_sx: float = 1.0
+        self._render_sy: float = 1.0
+        self._frame_w: int = 0
+        self._frame_h: int = 0
+
         self._font_label = QFont("Consolas", 8, QFont.Weight.Bold)
         self._font_badge = QFont("Consolas", 7, QFont.Weight.Bold)
         self._font_idle  = QFont("Segoe UI", 11)
@@ -83,15 +101,33 @@ class VideoPanel(QWidget):
     # Public slots
     # ------------------------------------------------------------------
 
-    def update_frame(self, frame: np.ndarray, tracks: list, violations: list) -> None:
+    def update_frame(
+        self,
+        frame: np.ndarray,
+        tracks: list,
+        violations: list,
+        frame_index: int = 0,
+    ) -> None:
         self._pixmap = _numpy_to_qpixmap(frame)
         self._tracks = tracks
         self._violations = violations
         self._violation_ids = {v.get("track_id") for v in violations}
+        self._current_frame_index = frame_index
+        self._frame_h, self._frame_w = frame.shape[:2]
         self.update()
 
     def set_scenario(self, scenario) -> None:
         self._scenario = scenario
+
+    def set_paused(self, paused: bool) -> None:
+        self._is_paused = paused
+
+    def get_gt_labels(self) -> Dict[Tuple[int, int], str]:
+        return dict(self._gt_labels)
+
+    def clear_gt_labels(self) -> None:
+        self._gt_labels.clear()
+        self.update()
 
     def clear(self) -> None:
         self._pixmap = None
@@ -157,8 +193,62 @@ class VideoPanel(QWidget):
     # Context menu
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Mouse events
+    # ------------------------------------------------------------------
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.fullscreen_requested.emit()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.RightButton:
+            fp = self._screen_to_frame(event.pos())
+            if fp is not None and self._tracks:
+                hit = self._find_track_at(fp)
+                if hit is not None:
+                    self._show_gt_menu(hit, event.globalPos())
+                    return
+        super().mousePressEvent(event)
+
+    def _screen_to_frame(self, screen_pt: QPoint) -> Optional[QPoint]:
+        """Convert widget coordinates to frame-pixel coordinates."""
+        if self._frame_w <= 0 or self._frame_h <= 0:
+            return None
+        fx = (screen_pt.x() - self._render_ox) / max(self._render_sx, 1e-9)
+        fy = (screen_pt.y() - self._render_oy) / max(self._render_sy, 1e-9)
+        if 0 <= fx <= self._frame_w and 0 <= fy <= self._frame_h:
+            return QPoint(int(fx), int(fy))
+        return None
+
+    def _find_track_at(self, fp: QPoint) -> Optional[object]:
+        for t in self._tracks:
+            x1, y1, x2, y2 = t.bbox
+            if x1 <= fp.x() <= x2 and y1 <= fp.y() <= y2:
+                return t
+        return None
+
+    def _show_gt_menu(self, track, global_pos) -> None:
+        """Show a context menu for GT label assignment."""
+        menu = QMenu(self)
+        menu.addSection(f"GT label  (track {track.track_id})")
+        act_tp = menu.addAction("TP  — True Positive (correct detection)")
+        act_fp = menu.addAction("FP  — False Positive (phantom detection)")
+        act_fn = menu.addAction("FN  — False Negative (missed violation)")
+        menu.addSeparator()
+        act_cl = menu.addAction("Clear label")
+        chosen = menu.exec(global_pos)
+        key = (self._current_frame_index, track.track_id)
+        if chosen == act_tp:
+            self._gt_labels[key] = "TP"
+        elif chosen == act_fp:
+            self._gt_labels[key] = "FP"
+        elif chosen == act_fn:
+            self._gt_labels[key] = "FN"
+        elif chosen == act_cl:
+            self._gt_labels.pop(key, None)
+        self.update()
+
     def contextMenuEvent(self, event) -> None:
-        from PySide6.QtWidgets import QMenu
         menu = QMenu(self)
         act_save  = menu.addAction("Save current frame as PNG…")
         act_clear = menu.addAction("Clear snapshot (return to live)")
@@ -221,6 +311,12 @@ class VideoPanel(QWidget):
         sx = scaled.width()  / display_pixmap.width()
         sy = scaled.height() / display_pixmap.height()
         avg_s = (sx + sy) * 0.5
+
+        # Store render geometry for _screen_to_frame()
+        self._render_ox = ox
+        self._render_oy = oy
+        self._render_sx = sx
+        self._render_sy = sy
 
         # ── switch to frame-pixel coordinate space ───────────────────
         painter.save()
@@ -398,6 +494,23 @@ class VideoPanel(QWidget):
                     painter.drawRoundedRect(QRectF(lx, by, bw, bh), 4, 4)
                     painter.setPen(QPen(_COL_BADGE_TXT))
                     painter.drawText(QPointF(lx + 4, by + bh - 4), badge)
+
+            # GT label badge
+            gt_key = (self._current_frame_index, track.track_id)
+            gt_lbl = self._gt_labels.get(gt_key)
+            if gt_lbl:
+                gt_col = {"TP": _COL_GT_TP, "FP": _COL_GT_FP, "FN": _COL_GT_FN}.get(
+                    gt_lbl, _COL_GT_TP
+                )
+                gw = fm.horizontalAdvance(gt_lbl) + 8
+                gh = th + 4
+                gx = float(x2) - gw - 2
+                gy = float(y1) + 2
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(gt_col))
+                painter.drawRoundedRect(QRectF(gx, gy, gw, gh), 3, 3)
+                painter.setPen(QPen(QColor(0, 0, 0)))
+                painter.drawText(QPointF(gx + 4, gy + gh - 4), gt_lbl)
 
     # ------------------------------------------------------------------
     # Idle screen

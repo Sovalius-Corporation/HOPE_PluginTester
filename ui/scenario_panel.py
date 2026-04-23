@@ -310,12 +310,24 @@ class ScenarioPanel(QWidget):
         self._qc_model.setPlaceholderText(r"models\yolov8n.onnx")
         self._qc_plugins.setPlaceholderText("speeding, stop_line, …")
 
+        # Source type selector
+        self._qc_source_type = QComboBox()
+        self._qc_source_type.addItems(["File", "Webcam (index)", "RTSP", "IP Camera (HTTP)"])
+        self._qc_webcam_index = QSpinBox()
+        self._qc_webcam_index.setRange(0, 16)
+        self._qc_webcam_index.setValue(0)
+        self._qc_rtsp_url = QLineEdit()
+        self._qc_rtsp_url.setPlaceholderText("rtsp://user:pass@host:554/stream1")
+
         # Restore last-used paths from QSettings
         _s = QSettings("HOPEPluginTester", "ScenarioPanel")
         self._qc_root.setText(_s.value("qc_root", ""))
         self._qc_plugins_dir.setText(_s.value("qc_plugins_dir", ""))
         self._qc_video.setText(_s.value("qc_video", ""))
         self._qc_model.setText(_s.value("qc_model", ""))
+        src_idx = int(_s.value("qc_source_type", 0))
+        self._qc_source_type.setCurrentIndex(src_idx)
+        self._qc_rtsp_url.setText(_s.value("qc_rtsp_url", ""))
 
         root_lbl = QLabel("SVG_HOPE root:")
         root_lbl.setToolTip(
@@ -338,6 +350,18 @@ class ScenarioPanel(QWidget):
 
         pf.addRow("Video file:",
             self._browse_row(self._qc_video, lambda: self._pick_video(self._qc_video)))
+        # Source type selector rows
+        self._source_type_lbl = QLabel("Source type:")
+        pf.addRow(self._source_type_lbl, self._qc_source_type)
+        self._video_row_lbl = QLabel("Video file:")
+        self._video_row_w   = self._browse_row(self._qc_video, lambda: self._pick_video(self._qc_video))
+        pf.addRow(self._video_row_lbl, self._video_row_w)
+        self._webcam_lbl = QLabel("Webcam index:")
+        pf.addRow(self._webcam_lbl, self._qc_webcam_index)
+        self._rtsp_lbl = QLabel("RTSP / HTTP URL:")
+        pf.addRow(self._rtsp_lbl, self._qc_rtsp_url)
+        self._qc_source_type.currentIndexChanged.connect(self._on_source_type_changed)
+        self._on_source_type_changed(self._qc_source_type.currentIndex())
         pf.addRow("ONNX model:",
             self._browse_row(self._qc_model, lambda: self._pick_onnx(self._qc_model)))
         pf.addRow("Plugins:",
@@ -398,6 +422,18 @@ class ScenarioPanel(QWidget):
         return scroll
 
     # Browse helpers -------------------------------------------------------
+
+    def _on_source_type_changed(self, idx: int) -> None:
+        """Show/hide source-specific input rows."""
+        is_file   = idx == 0
+        is_webcam = idx == 1
+        is_url    = idx >= 2
+        for w in (self._video_row_lbl, self._video_row_w):
+            w.setVisible(is_file)
+        for w in (self._webcam_lbl, self._qc_webcam_index):
+            w.setVisible(is_webcam)
+        for w in (self._rtsp_lbl, self._qc_rtsp_url):
+            w.setVisible(is_url)
 
     def _pick_dir(self, field: QLineEdit) -> None:
         start = field.text() or ""
@@ -501,18 +537,33 @@ class ScenarioPanel(QWidget):
         frame_skip = self._qc_frame_skip.value()
         device     = self._qc_device.currentText()
 
+        src_idx = self._qc_source_type.currentIndex()
+
         # Persist paths so they survive restarts
         _s = QSettings("HOPEPluginTester", "ScenarioPanel")
         _s.setValue("qc_root",        root)
         _s.setValue("qc_plugins_dir", plugins_dir)
         _s.setValue("qc_video",       video)
         _s.setValue("qc_model",       model)
+        _s.setValue("qc_source_type", src_idx)
+        _s.setValue("qc_rtsp_url",    self._qc_rtsp_url.text())
+
+        # Determine video_path expression for the script
+        if src_idx == 1:
+            # Webcam: integer index
+            video_expr = str(self._qc_webcam_index.value())
+        elif src_idx >= 2:
+            # RTSP / HTTP URL: string
+            url = self._qc_rtsp_url.text().strip()
+            video_expr = f'r"{url}"'
+        else:
+            video_expr = f'r"{video}"'
 
         plugin_list = repr(plugins)
         plugin_cfgs = "{" + ", ".join(f'"{p}": {{}}' for p in plugins) + "}"
 
         # Build the optional path lines (omit blank ones so the script stays clean)
-        path_lines = [f's.video_path    = r"{video}"', f's.model_path    = r"{model}"']
+        path_lines = [f"s.video_path    = {video_expr}", f's.model_path    = r"{model}"']
         if root:
             path_lines.insert(0, f's.svg_hope_root = r"{root}"')
         if plugins_dir:
