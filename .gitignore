@@ -1,3 +1,7 @@
+# Build logs
+build_log*.txt
+build_output*.txt
+
 # Build outputs
 build/
 dist/
