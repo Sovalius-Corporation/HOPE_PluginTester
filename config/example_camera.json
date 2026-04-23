@@ -1,0 +1,40 @@
+{
+  "_comment": "Example camera config — use as reference when writing scenario scripts.",
+  "name": "cam1",
+  "speed_limit_mph": 30,
+  "pixels_per_meter": 8.5,
+  "location": "Main St & Oak Ave",
+  "coordinates": [25.7617, -80.1918],
+  "is_built_up_area": true,
+  "country_code": "US",
+
+  "lanes": [
+    {
+      "_comment": "Replace boundaries with real pixel coordinates from your video.",
+      "lane_id": 0,
+      "name": "Northbound Lane 1",
+      "boundaries": [[0, 200], [640, 200], [640, 720], [0, 720]],
+      "direction_angle": 90.0,
+      "lane_type": "regular",
+      "speed_limit_mph": 30,
+      "allows_overtaking": true,
+      "left_line_type": "solid",
+      "right_line_type": "dashed"
+    },
+    {
+      "lane_id": 1,
+      "name": "Northbound Lane 2",
+      "boundaries": [[640, 200], [1280, 200], [1280, 720], [640, 720]],
+      "direction_angle": 90.0,
+      "lane_type": "regular",
+      "speed_limit_mph": 30,
+      "allows_overtaking": true,
+      "left_line_type": "dashed",
+      "right_line_type": "solid"
+    }
+  ],
+
+  "stop_lines": [
+    [[0, 480], [1280, 480]]
+  ]
+}

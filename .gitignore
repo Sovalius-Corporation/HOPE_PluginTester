@@ -1,0 +1,47 @@
+# Build outputs
+build/
+dist/
+*.spec.bak
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+
+# PyInstaller
+*.pkg
+*.exe
+
+# ONNX / model caches
+*.engine
+*.onnx
+*.pt
+*.pth
+
+# Logs & evidence
+logs/
+*.log
+*.log.*
+
+# VS Code
+.vscode/
+
+# Environment
+.env
+*.env
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs / violations
+violations/
+screenshots/
+recordings/
+exports/
+
+# QSettings / runtime config
+*.ini
