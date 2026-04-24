@@ -348,9 +348,7 @@ class ScenarioPanel(QWidget):
         pf.addRow(pdir_lbl,
             self._browse_row(self._qc_plugins_dir, lambda: self._pick_dir(self._qc_plugins_dir)))
 
-        pf.addRow("Video file:",
-            self._browse_row(self._qc_video, lambda: self._pick_video(self._qc_video)))
-        # Source type selector rows
+        # Source type selector
         self._source_type_lbl = QLabel("Source type:")
         pf.addRow(self._source_type_lbl, self._qc_source_type)
         self._video_row_lbl = QLabel("Video file:")
